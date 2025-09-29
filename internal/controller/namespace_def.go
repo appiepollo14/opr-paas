@@ -89,9 +89,7 @@ func (r *PaasReconciler) paasNSsFromNs(ctx context.Context, ns string) map[strin
 		}
 		nsName := nameFromPaasNs + "-" + pns.Name
 		nss[nsName] = pns
-		for key, value := range r.paasNSsFromNs(ctx, nsName) {
-			nss[key] = value
-		}
+		maps.Copy(nss, r.paasNSsFromNs(ctx, nsName))
 	}
 	return nss
 }
@@ -121,30 +119,20 @@ func (r *PaasReconciler) nsDefsFromPaasNamespaces(
 	result := namespaceDefs{}
 	for namespace, nsConfig := range paas.Spec.Namespaces {
 		fullNsName := join(paas.Name, namespace)
-		secrets := map[string]string{}
-		maps.Copy(secrets, paas.Spec.Secrets)
-		maps.Copy(secrets, nsConfig.Secrets)
-		paasNsGroups := nsConfig.Groups
-		if len(paasNsGroups) == 0 {
-			paasNsGroups = paasGroups
-		}
+		secrets := mergeSecrets(paas.Spec.Secrets, nsConfig.Secrets)
+		paasNsGroups := effectiveGroups(nsConfig.Groups, paasGroups)
 		base := newNamespaceDef(fullNsName, paas.Name, paasNsGroups, secrets)
 		result[base.nsName] = base
 
 		for nsName, paasns := range r.paasNSsFromNs(ctx, base.nsName) {
-			secrets = map[string]string{}
-			maps.Copy(secrets, paas.Spec.Secrets)
-			maps.Copy(secrets, paasns.Spec.Secrets)
-			paasNsGroups = nsConfig.Groups
-			if len(paasNsGroups) == 0 {
-				paasNsGroups = paasGroups
-			}
+			nsSecrets := mergeSecrets(paas.Spec.Secrets, nsConfig.Secrets)
+			nsGroups := effectiveGroups(nsConfig.Groups, paasGroups)
 			ns := newNamespaceDefFromPaasNS(
 				nsName,
 				&paasns,
 				paas.Name,
-				append(paasGroups, paasNsGroups...),
-				secrets,
+				append(paasGroups, nsGroups...),
+				nsSecrets,
 			)
 			result[ns.nsName] = ns
 		}
@@ -197,18 +185,20 @@ func (r *PaasReconciler) nsDefsFromPaas(ctx context.Context, paas *v1alpha2.Paas
 	paasGroups := paas.Spec.Groups.Keys()
 	nsDefs := namespaceDefs{}
 
-	for _, ns := range r.nsDefsFromPaasNamespaces(ctx, paas, paasGroups) {
-		nsDefs[ns.nsName] = ns
-	}
-
+	maps.Copy(nsDefs, r.nsDefsFromPaasNamespaces(ctx, paas, paasGroups))
 	capNss, err := r.paasCapabilityNss(ctx, paas, paasGroups)
 	if err != nil {
 		return nil, err
 	}
-
-	for _, ns := range capNss {
-		nsDefs[ns.nsName] = ns
-	}
+	maps.Copy(nsDefs, capNss)
 
 	return nsDefs, nil
+}
+
+// effectiveGroups returns configGroups when not empty, otherwise defaultGroups
+func effectiveGroups(configGroups, defaultGroups []string) []string {
+	if len(configGroups) > 0 {
+		return configGroups
+	}
+	return defaultGroups
 }
